@@ -1,5 +1,6 @@
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
@@ -23,15 +24,46 @@ function fetchUrl(targetUrl, extraHeaders = {}) {
         ...extraHeaders
       }
     };
+
     const req = https.request(options, res => {
+      // Follow redirects (301, 302, 303, 307, 308)
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        const redirectUrl = res.headers.location.startsWith('http')
+          ? res.headers.location
+          : `https://${parsed.hostname}${res.headers.location}`;
+        console.log(`[redirect] ${res.statusCode} → ${redirectUrl}`);
+        return fetchUrl(redirectUrl, extraHeaders).then(resolve).catch(reject);
+      }
+
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
         const buf = Buffer.concat(chunks);
-        // handle gzip if needed — just use toString
-        resolve({ status: res.statusCode, body: buf.toString('utf8'), headers: res.headers });
+        const encoding = res.headers['content-encoding'] || '';
+
+        const decompress = (buf, cb) => {
+          if (encoding.includes('br')) {
+            zlib.brotliDecompress(buf, cb);
+          } else if (encoding.includes('gzip')) {
+            zlib.gunzip(buf, cb);
+          } else if (encoding.includes('deflate')) {
+            zlib.inflate(buf, cb);
+          } else {
+            cb(null, buf);
+          }
+        };
+
+        decompress(buf, (err, decompressed) => {
+          if (err) {
+            // If decompression fails try raw
+            resolve({ status: res.statusCode, body: buf.toString('utf8'), headers: res.headers });
+          } else {
+            resolve({ status: res.statusCode, body: decompressed.toString('utf8'), headers: res.headers });
+          }
+        });
       });
     });
+
     req.on('error', reject);
     req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout after 15s')); });
     req.end();
@@ -80,134 +112,115 @@ function mapEvents(events) {
 }
 
 async function scrapeSportyBet(code) {
+  // Priority order based on debug results — booking endpoint returns 200 + gzip
   const endpoints = [
     {
-      url: `https://www.sportybet.com/api/ng/orders/share?bookingCode=${code}`,
-      headers: { 'Referer': 'https://www.sportybet.com/ng/', 'Origin': 'https://www.sportybet.com' }
-    },
-    {
+      label: 'booking-api',
       url: `https://www.sportybet.com/api/ng/orders/booking?bookingCode=${code}`,
       headers: { 'Referer': 'https://www.sportybet.com/ng/', 'Origin': 'https://www.sportybet.com' }
     },
     {
-      url: `https://www.sportybet.com/api/ng/booking/share?code=${code}`,
-      headers: { 'Referer': 'https://www.sportybet.com/ng/' }
+      label: 'share-api',
+      url: `https://www.sportybet.com/api/ng/orders/share?bookingCode=${code}`,
+      headers: { 'Referer': 'https://www.sportybet.com/ng/', 'Origin': 'https://www.sportybet.com' }
     },
     {
-      url: `https://www.sportybet.com/ng/share-code?bookingCode=${code}`,
-      headers: { 'Accept': 'text/html,application/xhtml+xml', 'Referer': 'https://www.sportybet.com/ng/' }
+      label: 'timor-api',
+      url: `https://www.sportybet.com/api/ng/orders/timor/booking?bookingCode=${code}`,
+      headers: { 'Referer': 'https://www.sportybet.com/ng/' }
     }
   ];
 
-  const debugInfo = [];
-
   for (const ep of endpoints) {
     try {
-      console.log(`[SportyBet] Trying: ${ep.url}`);
+      console.log(`[SportyBet:${ep.label}] GET ${ep.url}`);
       const r = await fetchUrl(ep.url, ep.headers);
-      const snippet = r.body.slice(0, 300);
-      console.log(`[SportyBet] Status: ${r.status} | Body: ${snippet}`);
-      debugInfo.push({ url: ep.url, status: r.status, snippet });
+      console.log(`[SportyBet:${ep.label}] status=${r.status} body=${r.body.slice(0, 400)}`);
 
       if (r.status !== 200) continue;
 
-      // Try JSON parse
-      try {
-        const d = JSON.parse(r.body);
-        // Check various response shapes
-        const events =
-          d?.data?.sportEvents ||
-          d?.data?.betItems ||
-          d?.data?.events ||
-          d?.sportEvents ||
-          d?.betItems ||
-          d?.result?.sportEvents ||
-          d?.result?.betItems ||
-          [];
-
-        if (events.length > 0) {
-          console.log(`[SportyBet] ✓ Found ${events.length} events via JSON`);
-          const totalOdds = parseFloat(d?.data?.totalOdds || d?.totalOdds || d?.result?.totalOdds || 0);
-          return { selections: mapEvents(events), totalOdds };
-        }
-
-        // Log the actual keys to help debug
-        console.log(`[SportyBet] JSON keys: ${JSON.stringify(Object.keys(d))}`);
-        if (d.data) console.log(`[SportyBet] data keys: ${JSON.stringify(Object.keys(d.data))}`);
-
-      } catch(jsonErr) {
-        // Not JSON — try HTML scraping
-        const html = r.body;
-        const tryParse = s => { try { return JSON.parse(s); } catch(e) { return null; } };
-        const patterns = [
-          /"sportEvents"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-          /"betItems"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-          /"selections"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-          /"events"\s*:\s*(\[[\s\S]*?\])\s*[,}]/
-        ];
-        for (const pat of patterns) {
-          const m = html.match(pat);
+      let d;
+      try { d = JSON.parse(r.body); } catch(e) {
+        console.log(`[SportyBet:${ep.label}] not JSON — trying HTML parse`);
+        // HTML fallback
+        const tryP = s => { try { return JSON.parse(s); } catch(e) { return null; } };
+        for (const pat of [/"sportEvents"\s*:\s*(\[[\s\S]*?\])\s*[,}]/, /"betItems"\s*:\s*(\[[\s\S]*?\])\s*[,}]/]) {
+          const m = r.body.match(pat);
           if (m) {
-            const items = tryParse(m[1]);
+            const items = tryP(m[1]);
             if (Array.isArray(items) && items.length > 0) {
-              console.log(`[SportyBet] ✓ Found ${items.length} events via HTML`);
+              console.log(`[SportyBet:${ep.label}] ✓ HTML parse — ${items.length} events`);
               return { selections: mapEvents(items), totalOdds: 0 };
             }
           }
         }
+        continue;
       }
+
+      console.log(`[SportyBet:${ep.label}] JSON keys: ${JSON.stringify(Object.keys(d))}`);
+
+      const events =
+        d?.data?.sportEvents ||
+        d?.data?.betItems ||
+        d?.data?.events ||
+        d?.data?.selections ||
+        d?.sportEvents ||
+        d?.betItems ||
+        d?.result?.sportEvents ||
+        d?.result?.betItems ||
+        d?.result?.events ||
+        [];
+
+      if (events.length > 0) {
+        const totalOdds = parseFloat(
+          d?.data?.totalOdds || d?.data?.odds ||
+          d?.totalOdds || d?.result?.totalOdds || 0
+        );
+        console.log(`[SportyBet:${ep.label}] ✓ ${events.length} events, totalOdds=${totalOdds}`);
+        return { selections: mapEvents(events), totalOdds };
+      }
+
+      // Log full data structure to help debug
+      console.log(`[SportyBet:${ep.label}] no events found. data=${JSON.stringify(d).slice(0, 600)}`);
+
     } catch(e) {
-      console.log(`[SportyBet] Endpoint failed: ${e.message}`);
-      debugInfo.push({ url: ep.url, error: e.message });
+      console.log(`[SportyBet:${ep.label}] error: ${e.message}`);
     }
   }
 
-  throw new Error('All endpoints failed. Debug: ' + JSON.stringify(debugInfo.map(d => ({
-    url: d.url.split('?')[0], status: d.status, snippet: d.snippet?.slice(0, 100), error: d.error
-  }))));
+  throw new Error('Could not retrieve selections for ' + code + '. Check Render logs for full response.');
 }
 
 async function scrapeBetway(code) {
-  const endpoints = [
+  const r = await fetchUrl(
     `https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code}`,
-    `https://sports.betway.com.ng/en-ng/bet?bookedBetRef=${code}`
-  ];
-  for (const ep of endpoints) {
-    try {
-      const r = await fetchUrl(ep, { 'Referer': 'https://sports.betway.com.ng/' });
-      if (r.status !== 200) continue;
-      const d = JSON.parse(r.body);
-      const bets = d?.bets || d?.selections || d?.items || [];
-      if (bets.length) {
-        return {
-          selections: bets.map(b => ({
-            match: b.eventName || `${b.home || ''} vs ${b.away || ''}`,
-            pick: b.selectionName || b.outcome || '',
-            betpawaPick: convertToBetPawa(b.marketName || '', b.selectionName || ''),
-            odds: parseFloat(b.price || b.odds || 1),
-            startTime: b.startTime || ''
-          })),
-          totalOdds: parseFloat(d?.totalOdds || 0)
-        };
-      }
-    } catch(e) { console.log(`[Betway] ${e.message}`); }
-  }
-  throw new Error('Could not retrieve Betway selections for code: ' + code);
+    { 'Referer': 'https://sports.betway.com.ng/' }
+  );
+  if (r.status !== 200) throw new Error('Betway HTTP ' + r.status);
+  const d = JSON.parse(r.body);
+  const bets = d?.bets || d?.selections || d?.items || [];
+  if (!bets.length) throw new Error('No selections in Betway response');
+  return {
+    selections: bets.map(b => ({
+      match: b.eventName || `${b.home || ''} vs ${b.away || ''}`,
+      pick: b.selectionName || b.outcome || '',
+      betpawaPick: convertToBetPawa(b.marketName || '', b.selectionName || ''),
+      odds: parseFloat(b.price || b.odds || 1),
+      startTime: b.startTime || ''
+    })),
+    totalOdds: parseFloat(d?.totalOdds || 0)
+  };
 }
 
-// Read HTML at startup
 let indexHtml = '';
 try {
   indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   console.log('✓ index.html loaded');
-} catch(e) {
-  console.log('⚠ index.html not found — / will return JSON');
-}
+} catch(e) { console.log('⚠ index.html not found'); }
 
 const server = http.createServer(async (req, res) => {
   cors(res);
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
-
   const { pathname, query } = url.parse(req.url, true);
 
   if (pathname === '/' || pathname === '/index.html') {
@@ -226,7 +239,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/ping') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, msg: 'Running', version: '2.0.0' }));
+    res.end(JSON.stringify({ ok: true, msg: 'Running', version: '3.0.0' }));
     return;
   }
 
@@ -263,5 +276,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✓ Bet converter v2 running on port ${PORT}`);
+  console.log(`✓ Bet converter v3 on port ${PORT}`);
 });
