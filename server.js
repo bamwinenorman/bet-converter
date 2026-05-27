@@ -7,24 +7,26 @@ const path = require('path');
 
 const PORT = process.env.PORT || 4000;
 
-function fetchUrl(targetUrl, extraHeaders = {}) {
+function fetchUrl(targetUrl) {
+  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=ng`;
   return new Promise((resolve, reject) => {
-    const parsed = url.parse(targetUrl);
+    const parsed = require('url').parse(scraperUrl);
     const options = {
       hostname: parsed.hostname,
       path: parsed.path,
       method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        'Accept': 'application/json, text/html, */*',
-        'Accept-Language': 'en-NG,en;q=0.9',
-    
-        'Connection': 'keep-alive',
-        'Cache-Control': 'no-cache',
-        ...extraHeaders
-      }
+      headers: { 'Accept': 'application/json, text/html, */*' }
     };
-
+    const req = require('http').request(options, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8'), headers: res.headers }));
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.end();
+  });
+}
     const req = https.request(options, res => {
       // Follow redirects (301, 302, 303, 307, 308)
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
