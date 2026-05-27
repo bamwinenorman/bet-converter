@@ -4,70 +4,38 @@ const zlib = require('zlib');
 const url = require('url');
 const fs = require('fs');
 const path = require('path');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const PORT = process.env.PORT || 4000;
 
-function fetchUrl(targetUrl) {
-  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=ng`;
+function fetchUrl(targetUrl, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    const parsed = require('url').parse(scraperUrl);
+    const parsed = new URL(targetUrl);
+    const agent = process.env.PROXY_URL ? new HttpsProxyAgent(process.env.PROXY_URL) : undefined;
     const options = {
       hostname: parsed.hostname,
-      path: parsed.path,
+      path: parsed.pathname + parsed.search,
       method: 'GET',
-      headers: { 'Accept': 'application/json, text/html, */*' }
-    };
-    const req = require('http').request(options, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8'), headers: res.headers }));
-    });
-    req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Timeout')); });
-    req.end();
-  });
-}
-    const req = https.request(options, res => {
-      // Follow redirects (301, 302, 303, 307, 308)
-      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-        const redirectUrl = res.headers.location.startsWith('http')
-          ? res.headers.location
-          : `https://${parsed.hostname}${res.headers.location}`;
-        console.log(`[redirect] ${res.statusCode} → ${redirectUrl}`);
-        return fetchUrl(redirectUrl, extraHeaders).then(resolve).catch(reject);
+      agent,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+        'Accept': 'application/json, text/html, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        ...extraHeaders
       }
-
+    };
+    const req = https.request(options, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const buf = Buffer.concat(chunks);
-        const encoding = res.headers['content-encoding'] || '';
-
-        const decompress = (buf, cb) => {
-          if (encoding.includes('br')) {
-            zlib.brotliDecompress(buf, cb);
-          } else if (encoding.includes('gzip')) {
-            zlib.gunzip(buf, cb);
-          } else if (encoding.includes('deflate')) {
-            zlib.inflate(buf, cb);
-          } else {
-            cb(null, buf);
-          }
-        };
-
-        decompress(buf, (err, decompressed) => {
-          if (err) {
-            // If decompression fails try raw
-            resolve({ status: res.statusCode, body: buf.toString('utf8'), headers: res.headers });
-          } else {
-            resolve({ status: res.statusCode, body: decompressed.toString('utf8'), headers: res.headers });
-          }
-        });
-      });
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        body: Buffer.concat(chunks).toString('utf8'),
+        headers: res.headers
+      }));
     });
-
     req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout after 15s')); });
+    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout')); });
     req.end();
   });
 }
