@@ -18,7 +18,7 @@ function fetchUrl(targetUrl, extraHeaders = {}) {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         'Accept': 'application/json, text/html, */*',
         'Accept-Language': 'en-NG,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
+    
         'Connection': 'keep-alive',
         'Cache-Control': 'no-cache',
         ...extraHeaders
