@@ -1,6 +1,8 @@
 const http = require('http');
 const https = require('https');
 const url = require('url');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 4000;
 
@@ -34,7 +36,6 @@ function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Content-Type', 'application/json');
 }
 
 function convertToBetPawa(market, pick) {
@@ -64,18 +65,15 @@ function convertToBetPawa(market, pick) {
 
 async function scrapeSportyBet(code) {
   console.log(`[SportyBet] code: ${code}`);
-  // Method 1: JSON API
   try {
     const r = await fetchUrl(`https://www.sportybet.com/api/ng/orders/share?bookingCode=${code}`, {
       'Referer': 'https://www.sportybet.com/ng/',
       'Origin': 'https://www.sportybet.com'
     });
-    console.log(`[SportyBet] API status: ${r.status}`);
     if (r.status === 200) {
       const d = JSON.parse(r.body);
       const events = d?.data?.sportEvents || d?.data?.betItems || d?.sportEvents || [];
       if (events.length > 0) {
-        const totalOdds = parseFloat(d?.data?.totalOdds || 0);
         return {
           selections: events.map(e => ({
             match: `${e.homeTeamName || e.homeName || ''} vs ${e.awayTeamName || e.awayName || e.eventName || ''}`.replace(/\s+/g,' ').trim(),
@@ -84,39 +82,31 @@ async function scrapeSportyBet(code) {
             odds: parseFloat(e.odds || e.price || 1),
             startTime: e.gameTime || e.startTime || ''
           })),
-          totalOdds
+          totalOdds: parseFloat(d?.data?.totalOdds || 0)
         };
       }
     }
   } catch(e) { console.log(`[SportyBet] API failed: ${e.message}`); }
 
-  // Method 2: HTML page scraping
   try {
     const r = await fetchUrl(`https://www.sportybet.com/ng/share-code?bookingCode=${code}`, {
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml',
       'Referer': 'https://www.sportybet.com/ng/'
     });
-    console.log(`[SportyBet] HTML status: ${r.status}`);
     if (r.status === 200) {
-      const html = r.body;
       const tryParse = s => { try { return JSON.parse(s); } catch(e) { return null; } };
-      const patterns = [
-        /"sportEvents"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-        /"betItems"\s*:\s*(\[[\s\S]*?\])\s*[,}]/,
-        /"selections"\s*:\s*(\[[\s\S]*?\])\s*[,}]/
-      ];
-      for (const pat of patterns) {
-        const m = html.match(pat);
+      for (const pat of [/"sportEvents"\s*:\s*(\[[\s\S]*?\])\s*[,}]/, /"betItems"\s*:\s*(\[[\s\S]*?\])\s*[,}]/]) {
+        const m = r.body.match(pat);
         if (m) {
           const items = tryParse(m[1]);
           if (Array.isArray(items) && items.length > 0) {
             return {
               selections: items.map(e => ({
-                match: `${e.homeTeamName || e.homeName || ''} vs ${e.awayTeamName || e.awayName || ''}`.trim(),
+                match: `${e.homeTeamName || ''} vs ${e.awayTeamName || ''}`.trim(),
                 pick: e.outcomeName || e.outcome || '',
-                betpawaPick: convertToBetPawa(e.marketName || '', e.outcomeName || e.outcome || ''),
-                odds: parseFloat(e.odds || e.price || 1),
-                startTime: e.gameTime || e.startTime || ''
+                betpawaPick: convertToBetPawa(e.marketName || '', e.outcomeName || ''),
+                odds: parseFloat(e.odds || 1),
+                startTime: e.gameTime || ''
               })),
               totalOdds: 0
             };
@@ -130,7 +120,6 @@ async function scrapeSportyBet(code) {
 }
 
 async function scrapeBetway(code) {
-  console.log(`[Betway] code: ${code}`);
   const r = await fetchUrl(`https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code}`, {
     'Referer': 'https://sports.betway.com.ng/'
   });
@@ -142,13 +131,18 @@ async function scrapeBetway(code) {
     selections: bets.map(b => ({
       match: b.eventName || `${b.home || ''} vs ${b.away || ''}`,
       pick: b.selectionName || b.outcome || '',
-      betpawaPick: convertToBetPawa(b.marketName || b.betType || '', b.selectionName || b.outcome || ''),
+      betpawaPick: convertToBetPawa(b.marketName || '', b.selectionName || ''),
       odds: parseFloat(b.price || b.odds || 1),
-      startTime: b.startTime || b.eventDate || ''
+      startTime: b.startTime || ''
     })),
     totalOdds: parseFloat(d?.totalOdds || 0)
   };
 }
+
+// Read index.html once at startup, replace SERVER_URL placeholder
+let indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+// The HTML uses SERVER_URL placeholder — replaced at runtime with actual host
+// (handled dynamically per request below)
 
 const server = http.createServer(async (req, res) => {
   cors(res);
@@ -156,13 +150,26 @@ const server = http.createServer(async (req, res) => {
 
   const { pathname, query } = url.parse(req.url, true);
 
-  if (pathname === '/' || pathname === '/ping') {
+  // Serve frontend
+  if (pathname === '/' || pathname === '/index.html') {
+    const host = req.headers.host || 'localhost:' + PORT;
+    const proto = req.headers['x-forwarded-proto'] || 'http';
+    const serverUrl = `${proto}://${host}`;
+    const html = indexHtml.replace('__SERVER_URL__', serverUrl);
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(html);
+    return;
+  }
+
+  if (pathname === '/ping') {
+    res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
-    res.end(JSON.stringify({ ok: true, msg: 'Bet converter API is running', version: '1.0.0' }));
+    res.end(JSON.stringify({ ok: true, msg: 'Running' }));
     return;
   }
 
   if (pathname !== '/convert') {
+    res.setHeader('Content-Type', 'application/json');
     res.writeHead(404);
     res.end(JSON.stringify({ error: 'Use /convert?platform=sportybet&code=XXX' }));
     return;
@@ -170,8 +177,9 @@ const server = http.createServer(async (req, res) => {
 
   const { code, platform } = query;
   if (!code || !platform) {
+    res.setHeader('Content-Type', 'application/json');
     res.writeHead(400);
-    res.end(JSON.stringify({ error: 'Missing required params: code, platform' }));
+    res.end(JSON.stringify({ error: 'Missing: code, platform' }));
     return;
   }
 
@@ -185,15 +193,17 @@ const server = http.createServer(async (req, res) => {
       ? result.totalOdds
       : parseFloat(result.selections.reduce((a, s) => a * s.odds, 1).toFixed(2));
 
+    res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true, code, platform, selections: result.selections, totalOdds }));
   } catch(e) {
     console.error('[ERROR]', e.message);
+    res.setHeader('Content-Type', 'application/json');
     res.writeHead(200);
     res.end(JSON.stringify({ ok: false, error: e.message }));
   }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✓ Bet converter running on port ${PORT}`);
+  console.log(`✓ Bet converter running → http://localhost:${PORT}`);
 });
