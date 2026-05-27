@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bet Converter · SportyBet / Betway → BetPawa</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --g: #0a7c3e; --gl: #e6f5ee; --bg: #f7f8fa; --card: #ffffff;
+    --txt: #111; --txt2: #555; --txt3: #999;
+    --bdr: #e0e0e0; --danger: #d32f2f; --warn-bg: #fff8e1; --warn-bdr: #f9a825;
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--txt); min-height: 100vh; }
+  .wrap { max-width: 600px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .sub { font-size: 14px; color: var(--txt2); margin-bottom: 24px; }
+  .server-status { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; border: 1px solid var(--bdr); background: var(--card); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.on { background: var(--g); } .dot.off { background: var(--danger); } .dot.checking { background: #f9a825; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+  .tab { padding: 11px; border-radius: 8px; border: 1px solid var(--bdr); background: var(--card); font-size: 14px; font-weight: 500; cursor: pointer; color: var(--txt2); transition: all .15s; }
+  .tab.on { background: var(--gl); color: var(--g); border-color: var(--g); }
+  .inp-row { display: flex; gap: 8px; margin-bottom: 12px; }
+  input[type=text], input[type=number] { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--bdr); font-size: 15px; font-family: inherit; background: var(--card); color: var(--txt); outline: none; }
+  input[type=text]:focus, input[type=number]:focus { border-color: var(--g); }
+  .code-inp { font-family: 'Courier New', monospace; letter-spacing: .06em; text-transform: uppercase; }
+  .go-btn { padding: 10px 24px; border-radius: 8px; border: none; background: var(--g); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity .15s; }
+  .go-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .stake-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+  .stake-row label { font-size: 13px; color: var(--txt2); white-space: nowrap; }
+  .stake-row input { width: 140px; }
+  .log { background: #1a1a2e; border-radius: 8px; padding: 12px 16px; font-size: 12px; font-family: 'Courier New', monospace; line-height: 1.8; margin-bottom: 16px; display: none; max-height: 160px; overflow-y: auto; }
+  .log.show { display: block; }
+  .log .ok { color: #4caf50; } .log .err { color: #f44336; } .log .dim { color: #888; }
+  .card { background: var(--card); border: 1px solid var(--bdr); border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; }
+  .card-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .card-lbl { font-size: 12px; font-weight: 600; color: var(--txt2); text-transform: uppercase; letter-spacing: .05em; }
+  .bdg { font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 600; }
+  .bdg-src { background: #f0f0f0; color: var(--txt2); }
+  .bdg-pawa { background: var(--g); color: #fff; }
+  .leg { padding: 10px 0; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .leg:last-child { border-bottom: none; }
+  .leg-m { font-size: 14px; font-weight: 500; }
+  .leg-d { font-size: 12px; color: var(--txt2); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .pick { color: var(--g); font-weight: 600; }
+  .odds-val { font-size: 13px; font-weight: 600; color: var(--g); flex-shrink: 0; }
+  .tots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+  .tot { background: var(--bg); border-radius: 8px; padding: 10px 12px; text-align: center; }
+  .tot-l { font-size: 11px; color: var(--txt3); margin-bottom: 3px; }
+  .tot-v { font-size: 18px; font-weight: 600; color: var(--txt); }
+  .pawa-card { border: 2px solid var(--g); border-radius: 12px; padding: 16px 20px; background: var(--gl); }
+  .slip { background: #fff; border-radius: 8px; padding: 14px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 2; color: var(--txt); white-space: pre-wrap; word-break: break-word; border: 1px solid var(--bdr); margin-bottom: 12px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { flex: 1; min-width: 120px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--bdr); background: #fff; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--txt2); transition: background .15s; }
+  .btn:hover { background: var(--bg); }
+  .btn.pri { background: var(--g); color: #fff; border-color: var(--g); }
+  .btn.pri:hover { opacity: .9; }
+  .note { font-size: 12px; color: var(--txt3); margin-top: 10px; line-height: 1.6; }
+  .offline-box { background: var(--warn-bg); border: 1px solid var(--warn-bdr); border-radius: 10px; padding: 16px 20px; margin-top: 16px; }
+  .offline-box h3 { font-size: 14px; margin-bottom: 10px; color: #555; }
+  .offline-box code { background: #fff; border: 1px solid var(--bdr); border-radius: 4px; padding: 2px 6px; font-size: 13px; font-family: 'Courier New', monospace; display: block; margin: 6px 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { display: inline-block; animation: spin .7s linear infinite; }
+  .payout-line { text-align: center; font-size: 14px; font-weight: 600; color: var(--g); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚡ Bet Converter</h1>
+  <div class="sub">SportyBet NG / Betway NG → BetPawa NG</div>
+
+  <div class="server-status" id="serverStatus">
+    <div class="dot checking" id="statusDot"></div>
+    <span id="statusTxt">Checking local server…</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" id="tab-sportybet" onclick="selP('sportybet',this)">🟢 SportyBet NG</button>
+    <button class="tab" id="tab-betway" onclick="selP('betway',this)">🔵 Betway NG</button>
+  </div>
+
+  <div class="inp-row">
+    <input class="code-inp" type="text" id="codeInp" placeholder="BOOKING CODE" maxlength="24"
+      oninput="this.value=this.value.toUpperCase()"
+      onkeydown="if(event.key==='Enter')go()" />
+    <button class="go-btn" id="goBtn" onclick="go()">Convert →</button>
+  </div>
+
+  <div class="stake-row">
+    <label>Stake (₦)</label>
+    <input type="number" id="stakeInp" placeholder="e.g. 500" min="0" />
+  </div>
+
+  <div class="log" id="logBox"></div>
+  <div id="out"></div>
+</div>
+
+<script>
+let plat = 'sportybet';
+const SERVER = 'http://localhost:4000';
+
+function selP(p, el) {
+  plat = p;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  el.classList.add('on');
+  document.getElementById('out').innerHTML = '';
+  clearLog();
+}
+
+function log(msg, cls = 'dim') {
+  const b = document.getElementById('logBox');
+  b.classList.add('show');
+  b.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+  b.scrollTop = b.scrollHeight;
+}
+function clearLog() {
+  const b = document.getElementById('logBox');
+  b.innerHTML = '';
+  b.classList.remove('show');
+}
+
+async function checkServer() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusTxt');
+  try {
+    const r = await fetch(SERVER + '/ping', { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.ok) {
+      dot.className = 'dot on';
+      txt.textContent = 'Local scraper running — ready to convert';
+      document.getElementById('goBtn').disabled = false;
+      return true;
+    }
+  } catch(e) {}
+  dot.className = 'dot off';
+  txt.textContent = 'Local server not running — see setup below';
+  document.getElementById('goBtn').disabled = true;
+  showOfflineBox();
+  return false;
+}
+
+function showOfflineBox() {
+  const existing = document.getElementById('offlineBox');
+  if (existing) return;
+  const box = document.createElement('div');
+  box.id = 'offlineBox';
+  box.className = 'offline-box';
+  box.innerHTML = `
+    <h3>🛠 Start the local scraper server</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">Open a terminal / command prompt and run:</p>
+    <code>cd bet-converter</code>
+    <code>node server.js</code>
+    <p style="font-size:12px;color:#888;margin-top:8px">Then refresh this page. The server stays running while you convert codes.</p>
+    <button class="btn" style="margin-top:12px;width:100%" onclick="recheckServer()">↺ Recheck server</button>
+  `;
+  document.getElementById('out').appendChild(box);
+}
+
+async function recheckServer() {
+  document.getElementById('out').innerHTML = '';
+  await checkServer();
+}
+
+async function go() {
+  const code = document.getElementById('codeInp').value.trim();
+  if (!code) { log('⚠ Enter a booking code', 'err'); return; }
+
+  clearLog();
+  document.getElementById('out').innerHTML = '';
+  document.getElementById('goBtn').disabled = true;
+
+  const label = plat === 'sportybet' ? 'SportyBet NG' : 'Betway NG';
+  log(`› ${label} · code: ${code}`, 'dim');
+  log('› scraping via local proxy…', 'dim');
+
+  try {
+    const res = await fetch(`${SERVER}/convert?platform=${plat}&code=${code}`, {
+      signal: AbortSignal.timeout(20000)
+    });
+    const data = await res.json();
+
+    if (!data.ok) {
+      log('✗ ' + data.error, 'err');
+      document.getElementById('goBtn').disabled = false;
+      return;
+    }
+
+    log(`✓ found ${data.selections.length} selections`, 'ok');
+    renderSlip(data);
+    renderBetPawa(data);
+  } catch(e) {
+    if (e.name === 'TimeoutError') {
+      log('✗ Request timed out — server may be overloaded', 'err');
+    } else {
+      log('✗ ' + e.message, 'err');
+    }
+    await checkServer();
+  }
+
+  document.getElementById('goBtn').disabled = false;
+}
+
+function renderSlip(data) {
+  const stake = parseFloat(document.getElementById('stakeInp').value) || 0;
+  const tots = data.totalOdds || data.selections.reduce((a, s) => a * s.odds, 1);
+  const payout = stake ? Math.round(stake * tots) : 0;
+
+  document.getElementById('out').innerHTML = `
+    <div class="card">
+      <div class="card-hdr">
+        <span class="card-lbl">From ${plat === 'sportybet' ? 'SportyBet NG' : 'Betway NG'}</span>
+        <span class="bdg bdg-src">${data.code}</span>
+      </div>
+      ${data.selections.map(s => `
+        <div class="leg">
+          <div>
+            <div class="leg-m">${s.match}</div>
+            <div class="leg-d">
+              <span>${s.pick}</span>
+              <span style="color:#ccc">→</span>
+              <span class="pick">${s.betpawaPick}</span>
+              ${s.startTime ? `<span style="color:#bbb">· ${s.startTime}</span>` : ''}
+            </div>
+          </div>
+          <div class="odds-val">${parseFloat(s.odds).toFixed(2)}</div>
+        </div>`).join('')}
+      <div class="tots">
+        <div class="tot"><div class="tot-l">Legs</div><div class="tot-v">${data.selections.length}</div></div>
+        <div class="tot"><div class="tot-l">Total Odds</div><div class="tot-v">${parseFloat(tots).toFixed(2)}</div></div>
+        <div class="tot"><div class="tot-l">${payout ? 'To Win' : 'Stake'}</div><div class="tot-v">${payout ? '₦' + payout.toLocaleString() : '—'}</div></div>
+      </div>
+    </div>
+    <div id="pawaOut"></div>`;
+}
+
+function renderBetPawa(data) {
+  const el = document.getElementById('pawaOut');
+  if (!el) return;
+  const stake = parseFloat(document.getElementById('stakeInp').value) || 0;
+  const tots = parseFloat(data.totalOdds) || data.selections.reduce((a, s) => a * s.odds, 1);
+  const payout = stake ? Math.round(stake * tots) : 0;
+  const slipTxt = data.selections.map((s, i) =>
+    `${i + 1}. ${s.match}\n   Pick: ${s.betpawaPick}  ·  Odds: ${parseFloat(s.odds).toFixed(2)}`
+  ).join('\n');
+  const copyTxt = data.selections.map((s, i) =>
+    `${i + 1}. ${s.match} — ${s.betpawaPick} @ ${parseFloat(s.odds).toFixed(2)}`
+  ).join('\n');
+
+  el.innerHTML = `
+    <div class="pawa-card">
+      <div class="card-hdr">
+        <span class="card-lbl" style="color:var(--g)">BetPawa NG Converted Slip</span>
+        <span class="bdg bdg-pawa">BetPawa</span>
+      </div>
+      <div class="slip">${slipTxt}</div>
+      ${payout ? `<div class="payout-line">₦${stake.toLocaleString()} stake → ₦${payout.toLocaleString()} potential win</div>` : ''}
+      <div class="btns" style="margin-top:12px">
+        <button class="btn pri" onclick="copyText(\`${copyTxt.replace(/`/g,'\\`')}\`, this)">📋 Copy Slip</button>
+        <button class="btn" onclick="window.open('https://www.betpawa.ng','_blank')">Open BetPawa →</button>
+      </div>
+      <div class="note">ℹ BetPawa has no public booking API. Use the copied slip above to recreate on betpawa.ng manually.</div>
+    </div>`;
+}
+
+function copyText(txt, btn) {
+  navigator.clipboard.writeText(txt).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
+}
+
+// Check server on load
+checkServer();
+setInterval(checkServer, 15000);
+</script>
+</body>
+</html>

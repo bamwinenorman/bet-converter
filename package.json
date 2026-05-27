@@ -1,0 +1,12 @@
+{
+  "name": "bet-converter",
+  "version": "1.0.0",
+  "description": "Proxy server to scrape SportyBet/Betway booking codes and convert to BetPawa",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
