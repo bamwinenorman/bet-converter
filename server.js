@@ -1,57 +1,9 @@
-const http = require('http');
-const https = require('https');
-const zlib = require('zlib');
-const url = require('url');
-const fs = require('fs');
-const path = require('path');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-
-const PORT = process.env.PORT || 4000;
-
-function fetchUrl(targetUrl, extraHeaders = {}) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(targetUrl);
-    const agent = process.env.PROXY_URL ? new HttpsProxyAgent(process.env.PROXY_URL) : undefined;
-    const options = {
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      method: 'GET',
-      agent,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
-        'Accept': 'application/json, text/html, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Connection': 'keep-alive',
-        ...extraHeaders
-      }
-    };
-    const req = https.request(options, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve({
-        status: res.statusCode,
-        body: Buffer.concat(chunks).toString('utf8'),
-        headers: res.headers
-      }));
-    });
-    req.on('error', reject);
-    req.setTimeout(20000, () => { req.destroy(); reject(new Error('Timeout')); });
-    req.end();
-  });
-}
-
-function cors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-}
-
-function convertToBetPawa(market, pick) {
+const BETPAWA_MARKETS = (market, pick) => {
   const p = (pick || '').toLowerCase().trim();
   const m = (market || '').toLowerCase();
-  if (['1','home','home win','1 (home)'].includes(p)) return '1';
-  if (['x','draw','x (draw)'].includes(p)) return 'X';
-  if (['2','away','away win','2 (away)'].includes(p)) return '2';
+  if (['1','home','home win'].includes(p)) return '1';
+  if (['x','draw'].includes(p)) return 'X';
+  if (['2','away','away win'].includes(p)) return '2';
   if (['1x','home or draw','home/draw'].includes(p)) return 'DC 1X';
   if (['x2','draw or away','draw/away'].includes(p)) return 'DC X2';
   if (['12','home or away','home/away'].includes(p)) return 'DC 12';
@@ -61,221 +13,120 @@ function convertToBetPawa(market, pick) {
   if (ov) return 'Over ' + ov[1];
   const un = p.match(/under\s*([\d.]+)/) || m.match(/under\s*([\d.]+)/);
   if (un) return 'Under ' + un[1];
-  if (m.includes('half') || m.includes('ht')) {
-    if (p === '1' || p.includes('home')) return 'HT 1';
-    if (p === 'x' || p.includes('draw')) return 'HT X';
-    if (p === '2' || p.includes('away')) return 'HT 2';
+  if (m.includes('ht') || m.includes('half')) {
+    if (p.includes('home') || p === '1') return 'HT 1';
+    if (p.includes('draw') || p === 'x') return 'HT X';
+    if (p.includes('away') || p === '2') return 'HT 2';
   }
-  const ah = (p + m).match(/([+-][\d.]+)/);
-  if (m.includes('handicap') && ah) return 'AH ' + ah[1];
   return pick;
-}
+};
 
-function mapEvents(events) {
-  return events.map(e => ({
-    match: `${e.homeTeamName || e.homeName || e.home || ''} vs ${e.awayTeamName || e.awayName || e.away || e.eventName || ''}`.replace(/\s+/g, ' ').trim(),
-    pick: e.outcomeName || e.outcome || e.pickName || e.selection || '',
-    betpawaPick: convertToBetPawa(e.marketName || e.betTypeName || e.marketType || '', e.outcomeName || e.outcome || e.pickName || ''),
-    odds: parseFloat(e.odds || e.price || e.outcomeOdds || 1),
-    startTime: e.gameTime || e.startTime || e.matchTime || ''
-  }));
-}
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Content-Type': 'application/json'
+};
 
-async function scrapeSportyBet(code) {
-  // Priority order based on debug results — booking endpoint returns 200 + gzip
+async function fetchBetway(code) {
   const endpoints = [
-    {
-      label: 'booking-api',
-      url: `https://www.sportybet.com/api/ng/orders/booking?bookingCode=${code}`,
-      headers: { 'Referer': 'https://www.sportybet.com/ng/', 'Origin': 'https://www.sportybet.com' }
-    },
-    {
-      label: 'share-api',
-      url: `https://www.sportybet.com/api/ng/orders/share?bookingCode=${code}`,
-      headers: { 'Referer': 'https://www.sportybet.com/ng/', 'Origin': 'https://www.sportybet.com' }
-    },
-    {
-      label: 'timor-api',
-      url: `https://www.sportybet.com/api/ng/orders/timor/booking?bookingCode=${code}`,
-      headers: { 'Referer': 'https://www.sportybet.com/ng/' }
-    }
+    `https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code}`,
+    `https://sports.betway.com.ng/api/v2/bets/share/${code}`,
+    `https://www.betway.com.ng/api/bets/share?code=${code}`
   ];
 
   for (const ep of endpoints) {
     try {
-      console.log(`[SportyBet:${ep.label}] GET ${ep.url}`);
-      const r = await fetchUrl(ep.url, ep.headers);
-      console.log(`[SportyBet:${ep.label}] status=${r.status} body=${r.body.slice(0, 400)}`);
-
-      if (r.status !== 200) continue;
-
-      let d;
-      try { d = JSON.parse(r.body); } catch(e) {
-        console.log(`[SportyBet:${ep.label}] not JSON — trying HTML parse`);
-        // HTML fallback
-        const tryP = s => { try { return JSON.parse(s); } catch(e) { return null; } };
-        for (const pat of [/"sportEvents"\s*:\s*(\[[\s\S]*?\])\s*[,}]/, /"betItems"\s*:\s*(\[[\s\S]*?\])\s*[,}]/]) {
-          const m = r.body.match(pat);
-          if (m) {
-            const items = tryP(m[1]);
-            if (Array.isArray(items) && items.length > 0) {
-              console.log(`[SportyBet:${ep.label}] ✓ HTML parse — ${items.length} events`);
-              return { selections: mapEvents(items), totalOdds: 0 };
-            }
-          }
+      const res = await fetch(ep, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json, */*',
+          'Referer': 'https://sports.betway.com.ng/',
+          'Origin': 'https://sports.betway.com.ng'
         }
-        continue;
-      }
+      });
 
-      console.log(`[SportyBet:${ep.label}] JSON keys: ${JSON.stringify(Object.keys(d))}`);
+      const text = await res.text();
+      console.log(`[${ep}] status=${res.status} body=${text.slice(0, 300)}`);
 
-      const events =
-        d?.data?.sportEvents ||
-        d?.data?.betItems ||
-        d?.data?.events ||
+      if (res.status !== 200) continue;
+
+      const d = JSON.parse(text);
+
+      // Try known response shapes
+      const bets =
+        d?.bets ||
+        d?.selections ||
+        d?.data?.bets ||
         d?.data?.selections ||
-        d?.sportEvents ||
-        d?.betItems ||
-        d?.result?.sportEvents ||
-        d?.result?.betItems ||
-        d?.result?.events ||
+        d?.result?.bets ||
         [];
 
-      if (events.length > 0) {
-        const totalOdds = parseFloat(
-          d?.data?.totalOdds || d?.data?.odds ||
-          d?.totalOdds || d?.result?.totalOdds || 0
-        );
-        console.log(`[SportyBet:${ep.label}] ✓ ${events.length} events, totalOdds=${totalOdds}`);
-        return { selections: mapEvents(events), totalOdds };
+      if (bets.length > 0) {
+        return {
+          selections: bets.map(b => ({
+            match: b.eventName || `${b.home || b.homeTeam || ''} vs ${b.away || b.awayTeam || ''}`,
+            pick: b.selectionName || b.outcomeName || b.outcome || '',
+            betpawaPick: BETPAWA_MARKETS(b.marketName || b.betType || '', b.selectionName || b.outcome || ''),
+            odds: parseFloat(b.price || b.odds || 1),
+            startTime: b.startTime || b.eventDate || ''
+          })),
+          totalOdds: parseFloat(d?.totalOdds || d?.data?.totalOdds || 0)
+        };
       }
 
-      // Log full data structure to help debug
-      console.log(`[SportyBet:${ep.label}] no events found. data=${JSON.stringify(d).slice(0, 600)}`);
-
+      // Log full structure for debugging
+      console.log(`Full response: ${text.slice(0, 1000)}`);
     } catch(e) {
-      console.log(`[SportyBet:${ep.label}] error: ${e.message}`);
+      console.log(`Endpoint ${ep} failed: ${e.message}`);
     }
   }
 
-  throw new Error('Could not retrieve selections for ' + code + '. Check Render logs for full response.');
+  throw new Error('No selections found. Check Worker logs for response structure.');
 }
 
-async function scrapeBetway(code) {
-  const r = await fetchUrl(
-    `https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code}`,
-    { 'Referer': 'https://sports.betway.com.ng/' }
-  );
-  if (r.status !== 200) throw new Error('Betway HTTP ' + r.status);
-  const d = JSON.parse(r.body);
-  const bets = d?.bets || d?.selections || d?.items || [];
-  if (!bets.length) throw new Error('No selections in Betway response');
-  return {
-    selections: bets.map(b => ({
-      match: b.eventName || `${b.home || ''} vs ${b.away || ''}`,
-      pick: b.selectionName || b.outcome || '',
-      betpawaPick: convertToBetPawa(b.marketName || '', b.selectionName || ''),
-      odds: parseFloat(b.price || b.odds || 1),
-      startTime: b.startTime || ''
-    })),
-    totalOdds: parseFloat(d?.totalOdds || 0)
-  };
-}
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
 
-let indexHtml = '';
-try {
-  indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-  console.log('✓ index.html loaded');
-} catch(e) { console.log('⚠ index.html not found'); }
-
-const server = http.createServer(async (req, res) => {
-  cors(res);
-  if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
-  const { pathname, query } = url.parse(req.url, true);
-
-  if (pathname === '/' || pathname === '/index.html') {
-    if (indexHtml) {
-      const host = req.headers.host || 'localhost:' + PORT;
-      const proto = req.headers['x-forwarded-proto'] || 'http';
-      const html = indexHtml.replace('__SERVER_URL__', `${proto}://${host}`);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
-    } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, msg: 'API running. index.html missing.' }));
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 200, headers: CORS });
     }
-    return;
-  }
-if (pathname === '/debug') {
-  const { code } = query;
-  if (!code) { res.writeHead(400, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'Missing code'})); return; }
-  try {
-    const r = await fetchUrl(`https://www.sportybet.com/api/ng/orders/booking?bookingCode=${code.toUpperCase()}`, {
-      'Referer': 'https://www.sportybet.com/ng/',
-      'Origin': 'https://www.sportybet.com'
-    });
-    res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify({ status: r.status, headers: r.headers, body: r.body.slice(0, 2000) }));
-  } catch(e) {
-    res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify({ error: e.message }));
-  }
-  return;
-}
-  if (pathname === '/debug') {
-  const { code } = query;
-  if (!code) { res.writeHead(400, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'Missing code'})); return; }
-  try {
-    const r = await fetchUrl(`https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code.toUpperCase()}`, {
-      'Referer': 'https://sports.betway.com.ng/',
-      'Origin': 'https://sports.betway.com.ng'
-    });
-    res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify({ status: r.status, body: r.body.slice(0, 3000) }));
-  } catch(e) {
-    res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify({ error: e.message }));
-  }
-  return;
-}
-  if (pathname === '/ping') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, msg: 'Running', version: '3.0.0' }));
-    return;
-  }
 
-  if (pathname !== '/convert') {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Use /convert?platform=sportybet&code=XXX' }));
-    return;
+    if (url.pathname === '/ping') {
+      return new Response(JSON.stringify({ ok: true, msg: 'CF Worker running', cf: request.cf?.colo }), { headers: CORS });
+    }
+
+    if (url.pathname === '/debug') {
+      const code = url.searchParams.get('code');
+      if (!code) return new Response(JSON.stringify({ error: 'Missing code' }), { headers: CORS });
+      const res = await fetch(`https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code.toUpperCase()}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 11) Chrome/120.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://sports.betway.com.ng/'
+        }
+      });
+      const body = await res.text();
+      return new Response(JSON.stringify({ status: res.status, cf_colo: request.cf?.colo, body: body.slice(0, 2000) }), { headers: CORS });
+    }
+
+    if (url.pathname === '/convert') {
+      const code = url.searchParams.get('code');
+      const platform = url.searchParams.get('platform');
+      if (!code || !platform) {
+        return new Response(JSON.stringify({ error: 'Missing: code, platform' }), { status: 400, headers: CORS });
+      }
+      try {
+        const result = await fetchBetway(code.toUpperCase());
+        const totalOdds = result.totalOdds > 0
+          ? result.totalOdds
+          : parseFloat(result.selections.reduce((a, s) => a * s.odds, 1).toFixed(2));
+        return new Response(JSON.stringify({ ok: true, code, platform, selections: result.selections, totalOdds }), { headers: CORS });
+      } catch(e) {
+        return new Response(JSON.stringify({ ok: false, error: e.message }), { headers: CORS });
+      }
+    }
+
+    return new Response(JSON.stringify({ error: 'Use /convert?platform=betway&code=XXX' }), { status: 404, headers: CORS });
   }
-
-  const { code, platform } = query;
-  if (!code || !platform) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Missing: code, platform' }));
-    return;
-  }
-
-  try {
-    let result;
-    if (platform === 'sportybet') result = await scrapeSportyBet(code.toUpperCase());
-    else if (platform === 'betway') result = await scrapeBetway(code.toUpperCase());
-    else throw new Error('Unknown platform: ' + platform);
-
-    const totalOdds = result.totalOdds > 0
-      ? result.totalOdds
-      : parseFloat(result.selections.reduce((a, s) => a * s.odds, 1).toFixed(2));
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, code, platform, selections: result.selections, totalOdds }));
-  } catch(e) {
-    console.error('[ERROR]', e.message);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: e.message }));
-  }
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✓ Bet converter v3 on port ${PORT}`);
-});
+};
