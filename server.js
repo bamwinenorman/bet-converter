@@ -254,6 +254,22 @@ if (pathname === '/debug') {
   }
   return;
 }
+  if (pathname === '/debug') {
+  const { code } = query;
+  if (!code) { res.writeHead(400, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'Missing code'})); return; }
+  try {
+    const r = await fetchUrl(`https://sports.betway.com.ng/api/Sportsbook/GetSharedBet?reference=${code.toUpperCase()}`, {
+      'Referer': 'https://sports.betway.com.ng/',
+      'Origin': 'https://sports.betway.com.ng'
+    });
+    res.writeHead(200, {'Content-Type':'application/json'});
+    res.end(JSON.stringify({ status: r.status, body: r.body.slice(0, 3000) }));
+  } catch(e) {
+    res.writeHead(200, {'Content-Type':'application/json'});
+    res.end(JSON.stringify({ error: e.message }));
+  }
+  return;
+}
   if (pathname === '/ping') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, msg: 'Running', version: '3.0.0' }));
